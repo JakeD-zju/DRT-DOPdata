@@ -1,0 +1,281 @@
+# -*- coding: utf-8 -*-
+"""
+Created on Thu Jul  3 10:02:22 2025
+
+@author: satellite
+"""
+
+import os
+import numpy as np
+import matplotlib.pyplot as plt
+from hybdrt.models import DRT
+from hybdrt.fileload_all_eis import EisDataReader  # 导入文件加载模块
+import pandas as pd
+from folderselector_all_filetype import FolderSelector
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg
+
+plt.rcParams['font.family'] = 'Microsoft YaHei'  # 使用微软雅黑字体
+
+class AnalysisEIS:
+    """电化学阻抗谱(EIS)分析类，用于DRT拟合和DOP分析"""
+    def __init__(self):
+        try:
+            self.fl = EisDataReader()
+            self.folder_selector = FolderSelector(self.process_data, show_buttons=[])
+            self.folder_selector.as_one = 'False'  # 改为布尔值
+            self.folder_selector.flag_text = '是否开启DOP'
+            self.folder_selector.as_one_fuc()
+            self.canvas = None
+            self.folder_selector.mainloop()
+        finally:
+            self.cleanup()
+    
+    def cleanup(self):
+        """清理资源"""
+        try:
+            plt.close('all')  # 关闭所有 matplotlib 图形
+        except Exception as e:
+            print(f"Error in cleaning up Matplotlib source: {e}")
+
+    def process_data(self):
+        """处理选中的文件或文件夹中的数据"""
+        try:
+            all_selected_items = self.folder_selector.get_selected_items()
+            file_timestamps = []
+            if os.path.isdir(all_selected_items[0]):  # 如果是文件夹
+                folder_path = all_selected_items[0]
+                for f in os.listdir(folder_path):
+                    file_path = os.path.join(folder_path, f)
+                    try:
+                        timestamps = self.get_file_timestamps(file_path)
+                        file_timestamps.append((f, timestamps)) if timestamps else None
+                    except Exception as e:
+                        print(f"Error in process_data: {e}")
+                        continue
+            
+            else:
+                folder_path = os.path.dirname(all_selected_items[0])
+                for item in all_selected_items:
+                    # file_path = os.path.join(folder_path, item)
+                    try:
+                        timestamps = self.get_file_timestamps(item)
+                        file_timestamps.append((
+                            os.path.basename(item), timestamps)) if timestamps else None
+                    except Exception as e:
+                        print(f"Error in process_data: {e}")
+                        continue
+                    # if item.endswith('.mpr'):
+                    #     source = 'biologic'
+                    # else:
+                    #     source = None
+                    # try:
+                    #     timestamp = self.fl.get_timestamp(item, source = source)
+                    #     file_timestamps.append((os.path.basename(item), timestamp)) if timestamp else None
+                    # except Exception as e:
+                    #     print(f"Error in process_data: {e}")
+                    #     continue
+                
+            sorted_files = sorted(file_timestamps, key=lambda x: x[1])               
+            lambda_0 = self.folder_selector.lambda_value
+            fits, data, data_dop = self.process_sorted_files(sorted_files, folder_path, lambda_0)
+            plt_file_name = f'DRT_Fit_Results_{sorted_files[0][0].split(".")[0]}_λ={lambda_0}'
+            
+            self.save_data_to_txt(data, data_dop, folder_path, plt_file_name)
+            
+            if fits:
+                self.plot_out_window(fits, plt_file_name, folder_path)
+        except Exception as e:
+            print(f"Error in process_data: {e}")
+        finally:
+            self.clear_temporary_data()
+
+    def clear_temporary_data(self):
+        """清除处理过程中创建的临时数据"""
+        if hasattr(self, 'fits'):
+            del self.fits
+        if hasattr(self, 'data'):
+            del self.data
+        if hasattr(self, 'data_dop'):
+            del self.data_dop
+        
+        # 强制垃圾回收
+        import gc
+        gc.collect()
+   
+    # def get_file_timestamps(self, folder):
+    #     """获取指定文件夹中所有EIS文件的时间戳"""
+    #     file_timestamps = []
+    #     for f in os.listdir(folder):
+    #         file_path = os.path.join(folder, f)
+    #         if f.endswith('.mpr'):
+    #             source = 'biologic'
+    #         # if f.endswith('.DTA'):
+    #         else:
+    #             source = None
+    #         try:
+    #             timestamp = self.fl.get_timestamp(file_path, source = source)
+    #             file_timestamps.append((f, timestamp)) if timestamp else None
+    #         except Exception as e:
+    #             print(f"Error in process_data: {e}")
+    #                 continue
+
+    #     return file_timestamps
+    def get_file_timestamps(self, file_path):
+        """获取指定EIS文件的时间戳"""
+        # if file_path.endswith('.txt') or file_path.endswith('.csv'):
+        #     timestamp = self.fl.get_chi_timestamp(file_path)
+        # if file_path.endswith('.mpr'):
+        #     source = 'biologic'
+        # # if f.endswith('.DTA'):
+        # else:
+        #     source = None
+        # timestamp = self.fl.get_timestamp(file_path, source = source)
+        timestamp = self.fl.get_timestamp(file_path)
+
+        return timestamp
+
+    def process_sorted_files(self, sorted_files, subfolder, iw_l2_lambda_0):
+        """处理排序后的文件列表，进行DRT分析"""
+        fits = {}
+        fixed_basis_tau = np.logspace(-7, 2, 181)
+        data = {'0x': fixed_basis_tau}
+        data_dop = None  # 默认为None
+
+        # 对每个文件进行DRT分析
+        for txt_file, _ in sorted_files:
+            try:
+                file_path = os.path.join(subfolder, txt_file)
+                eis_tup = self.fl.get_eis_tuple(file_path)
+                # 动态传递参数
+                fit_kwargs = {'iw_l2_lambda_0': iw_l2_lambda_0, 'nonneg': False}
+                if self.folder_selector.as_one:
+                    fit_kwargs['dop_l2_lambda_0'] = self.folder_selector.dop_value
+                eis_drt = DRT(fit_dop=self.folder_selector.as_one, fixed_basis_tau=fixed_basis_tau)
+                eis_drt.dual_fit_eis(*eis_tup, **fit_kwargs)
+                
+                fits[txt_file] = eis_drt
+                data[txt_file] = eis_drt.predict_distribution(fixed_basis_tau)
+                
+                # 仅在as_one为True时收集DOP数据
+                if self.folder_selector.as_one:
+                    if data_dop is None:
+                        data_dop = {'0x_dop': None}
+                    data_dop['0x_dop'], data_dop[txt_file] = eis_drt.predict_dop(
+                        normalize=True, return_nu=True)
+
+            except Exception as e:
+                print(f"Error processing {txt_file}: {e}")
+                continue
+    
+        return fits, data, data_dop
+    
+    def plot_out_window(self, fits, plt_name, subfolder):
+        """绘制四个子图并分别设置标题：DRT、DOP、拟合结果、残差"""
+        plt.close('all')  # 关闭所有 matplotlib 图形
+        if self.canvas:
+            self.canvas.get_tk_widget().destroy()  # 销毁之前的绘图 canvas
+
+        window_width = self.folder_selector.winfo_width()
+        window_height = self.folder_selector.winfo_height()
+
+        fig_width = min(10, window_width / 100)
+        fig_height = min(8, window_height / 100)
+
+        # 创建 2x2 子图布局
+        fig, axes = plt.subplots(2, 2, figsize=(fig_width, fig_height))
+        axes = axes.flatten()  # 展平为一维数组
+        
+        # 子图标题列表
+        subplot_titles = ["DRT 分布", "DOP 分布", "EIS 拟合结果", "拟合残差"]
+        
+        # 确保至少有一个拟合结果
+        if not fits:
+            for ax in axes:
+                ax.text(0.5, 0.5, "无数据可绘制", ha='center', va='center', fontsize=12)
+            plt.close(fig)
+            return
+
+        # 颜色映射
+        colormap = plt.get_cmap("tab20c")
+        
+        # 绘制四个子图
+        for i, ax in enumerate(axes):
+            if i == 0:
+                # 子图1：DRT 分布
+                ax.set_title(subplot_titles[0], fontsize=12)
+                for idx, (label, fit) in enumerate(fits.items()):
+                    eis_fmt = dict(c=colormap(idx / len(fits)), alpha=0.7)
+                    fit.plot_distribution(ax=ax, label=label, plot_ci=True, 
+                                          ls='-.', **eis_fmt)
+                ax.legend(fontsize=4)
+                ax.set_xlim(1e-7, 1e2)
+                
+            elif i == 1:
+                # 子图2：DOP 分布
+                ax.set_title(subplot_titles[1], fontsize=12)
+                if self.folder_selector.as_one:
+                    for idx, (label, fit) in enumerate(fits.items()):
+                        if hasattr(fit, 'plot_dop'):
+                            eis_fmt = dict(c=colormap(idx / len(fits)), alpha=0.7)
+                            fit.plot_dop(ax=ax, label=label, plot_ci=True, normalize=True,
+                                         ls='-.', **eis_fmt)
+                        else:
+                            ax.text(0.5, 0.5, "无DOP数据", ha='center', va='center')
+                else:
+                    ax.text(0.5, 0.5, "DOP未开启", ha='center', va='center', transform=ax.transAxes )
+                ax.set_xlim(0, 90)
+                
+            elif i == 2:
+                # 子图3：EIS 拟合结果
+                ax.set_title(subplot_titles[2], fontsize=12)
+                for idx, (label, fit) in enumerate(fits.items()):
+                    eis_fmt = dict(c=colormap(idx / len(fits)), alpha=0.7)
+                    fit.plot_eis_fit(axes=axes[2], plot_type='nyquist', plot_data=True, 
+                                     data_kw=dict(color=colormap(idx / len(fits)), alpha=0.7), 
+                                     **eis_fmt)
+                                    
+            elif i == 3:
+                # 子图4：拟合残差
+                ax.set_title(subplot_titles[3], fontsize=12)
+                for idx, (label, fit) in enumerate(fits.items()):
+                    eis_fmt = dict(color=colormap(idx / len(fits)), alpha=0.7)
+                    fit.plot_eis_residuals(axes=axes[3], **eis_fmt,
+                                           plot_sigma=True, facecolors='none', part='imag', scale_prefix='')
+                if ax.get_legend():
+                    ax.get_legend().remove()
+
+            ax.grid(True, linestyle='--', alpha=0.5)
+        
+        # 保存图形
+        fig.savefig(os.path.join(subfolder, f'{plt_name}.png'), dpi=300)
+        fig.tight_layout()
+        # 嵌入到窗口
+        try:
+            if self.folder_selector:
+                right_frame = self.folder_selector.right_frame
+                for widget in right_frame.winfo_children():
+                    widget.destroy()
+                
+                self.canvas = FigureCanvasTkAgg(fig, master=right_frame)
+                self.canvas.draw()
+                self.canvas.get_tk_widget().pack(fill="both", expand=True)
+                
+        except Exception as e:
+            print(f"图形嵌入错误: {e}")
+            plt.close(fig)
+
+    def save_data_to_txt(self, data, data_dop, subfolder, plt_name):
+        """将数据保存为txt文件"""
+        # 保存DRT数据
+        data_df = pd.DataFrame(data)
+        data_df.to_csv(os.path.join(subfolder, f'{plt_name}.txt'), 
+                       sep='\t', index=False)
+        if data_dop is None:
+            return
+        data_dop['0x_dop'] = data_dop['0x_dop'] * -90
+        data_dop_df = pd.DataFrame(data_dop)
+        data_dop_df.to_csv(os.path.join(subfolder, f'{plt_name}_dop.txt'), 
+                           sep='\t', index=False)
+
+if __name__ == "__main__":
+    app = AnalysisEIS()
