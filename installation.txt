@@ -1,0 +1,14 @@
+name: DRT-DOPdata
+channels:
+  - conda-forge
+dependencies:
+  - matplotlib
+  - numpy
+  - cvxopt
+  - pandas
+  - scipy
+  - scikit-learn
+  - scikit-image
+  - ipykernel
+  - conda-build
+  - mittag-leffler
