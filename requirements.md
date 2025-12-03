@@ -1,4 +1,8 @@
-pandas
 numpy
 matplotlib
-hybdrt (optional for DRT_all, git+https://github.com/jdhuang-csm/hybrid-drt)
+scipy
+pandas
+cvxopt
+scikit-learn
+mittag-leffler
+hybdrt
